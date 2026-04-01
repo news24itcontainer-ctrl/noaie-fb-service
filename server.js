@@ -1,5 +1,6 @@
 const express = require("express");
-const puppeteer = require("puppeteer");
+const puppeteer = require("puppeteer-core");
+const chromium = require("@sparticuz/chromium");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -17,27 +18,28 @@ app.get("/scrape", async (req, res) => {
 
   try {
     const browser = await puppeteer.launch({
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
       headless: true
     });
 
     const page = await browser.newPage();
     await page.goto(pageUrl, { waitUntil: "networkidle2" });
 
-    await page.waitForTimeout(5000);
+    await new Promise(r => setTimeout(r, 4000));
 
     const posts = await page.evaluate(() => {
-      const elements = document.querySelectorAll("div[role='article']");
-      const data = [];
+      const articles = document.querySelectorAll("div[role='article']");
+      const results = [];
 
-      elements.forEach(el => {
+      articles.forEach(el => {
         const text = el.innerText;
         if (text) {
-          data.push(text.substring(0, 300));
+          results.push(text.substring(0, 300));
         }
       });
 
-      return data.slice(0, 10);
+      return results.slice(0, 10);
     });
 
     await browser.close();
