@@ -7,7 +7,9 @@ const PORT = process.env.PORT || 8080;
 app.get("/", (_req, res) => {
   res.send("FB Scraper OK");
 });
-
+app.post("/health", (_req, res) => {
+  res.json({ ok: true, service: "fb-scraper" });
+});
 app.get("/scrape", async (req, res) => {
   const pageUrl = req.query.url;
 
