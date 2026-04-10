@@ -2,6 +2,8 @@
   "name": "fb-scraper-service",
   "version": "4.6.2",
   "main": "server.js",
-  "scripts": {"start": "node server.js"},
-  "dependencies": {"express": "^4.21.2", "playwright": "^1.52.0"}
+  "scripts": {
+    "start": "node server.js",
+    "postinstall": "npx playwright install --with-deps chromium"
+  }
 }
