@@ -1,9 +1,14 @@
 {
   "name": "fb-scraper-service",
-  "version": "4.6.2",
+  "version": "4.6.3",
+  "description": "Facebook scraper service per NOAIE",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "postinstall": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "playwright": "^1.59.1"
   }
 }
