@@ -1,115 +1,214 @@
+const express = require('express');
+const { chromium } = require('playwright');
 
-const express = require("express");
-const { chromium } = require("playwright");
+process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: '1mb' }));
 
-const PORT = process.env.PORT || 3005;
-const API_KEY = process.env.NOAIE_FB_API_KEY || "";
+const PORT = process.env.PORT || 3000;
+const API_KEY = process.env.API_KEY || '';
 
 function auth(req, res, next) {
   if (!API_KEY) return next();
-  const incoming = req.header("X-NOAIE-API-Key") || req.query.api_key || "";
-  if (incoming !== API_KEY) return res.status(401).json({ ok: false, error: "Unauthorized" });
-  next();
+
+  const headerKey = req.headers['x-api-key'];
+  const queryKey = req.query.key;
+
+  if (headerKey === API_KEY || queryKey === API_KEY) return next();
+
+  return res.status(401).json({
+    ok: false,
+    error: 'Unauthorized'
+  });
 }
 
-app.get('/health', auth, (_req, res) => {
-  res.json({ ok: true, service: 'fb-scraper', version: '4.6.2-permalink' });
-});
+function normalizeFacebookUrl(input) {
+  if (!input) return '';
+  let url = String(input).trim();
 
-async function scrapeFacebook(url, limit) {
-  let browser;
+  if (!/^https?:\/\//i.test(url)) {
+    url = 'https://www.facebook.com/' + url.replace(/^@/, '');
+  }
+
+  return url;
+}
+
+async function scrapeFacebook(pageUrl) {
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
+  });
+
+  const context = await browser.newContext({
+    viewport: { width: 1366, height: 2000 },
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+  });
+
+  const page = await context.newPage();
+
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--disable-blink-features=AutomationControlled','--no-sandbox','--disable-dev-shm-usage']
+    await page.goto(pageUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 90000
     });
-    const context = await browser.newContext({
-      viewport: { width: 1400, height: 1800 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      locale: 'it-IT'
+
+    await page.waitForTimeout(5000);
+
+    try {
+      const buttons = [
+        'text=Allow all cookies',
+        'text=Consenti tutti i cookie',
+        'text=Accetta tutto',
+        'text=Accept all',
+        '[aria-label="Allow all cookies"]'
+      ];
+
+      for (const sel of buttons) {
+        const el = page.locator(sel).first();
+        if (await el.count()) {
+          try {
+            await el.click({ timeout: 1500 });
+            await page.waitForTimeout(1000);
+            break;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    await page.evaluate(async () => {
+      for (let i = 0; i < 6; i++) {
+        window.scrollBy(0, 1400);
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     });
-    const page = await context.newPage();
-    page.setDefaultTimeout(45000);
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(4500);
 
-    const html = await page.content();
-    const blocked = /login|accedi|registrati|crea nuovo account|checkpoint/i.test(html) && /facebook/i.test(html);
-    if (blocked) {
-      return { ok: true, blocked: true, posts: [], debug: 'Facebook mostra login wall o contenuto bloccato' };
-    }
+    await page.waitForTimeout(2500);
 
-    const result = await page.evaluate((maxItems) => {
+    const posts = await page.evaluate(() => {
       const out = [];
       const seen = new Set();
-      const normalizeHref = (href) => {
-        if (!href) return '';
-        try {
-          const u = new URL(href, location.origin);
-          if (u.hostname.includes('m.facebook.com')) u.hostname = 'www.facebook.com';
-          if (u.hostname.includes('facebook.com')) {
-            u.searchParams.delete('__cft__');
-            u.searchParams.delete('__tn__');
-            u.searchParams.delete('comment_id');
-            u.searchParams.delete('reply_comment_id');
-            u.hash = '';
-          }
-          return u.toString();
-        } catch (e) {
-          return href;
-        }
-      };
 
-      const anchors = Array.from(document.querySelectorAll('a[href*="/posts/"], a[href*="/permalink/"], a[href*="/story.php"], a[href*="/reel/"]'));
+      const clean = (txt) =>
+        (txt || '')
+          .replace(/\s+/g, ' ')
+          .replace(/\u00a0/g, ' ')
+          .trim();
+
+      const anchors = Array.from(document.querySelectorAll('a[href]'));
+
       for (const a of anchors) {
-        const href = normalizeHref(a.href || '');
-        if (!href || seen.has(href)) continue;
-        seen.add(href);
+        const href = a.href || '';
+        const articleLike =
+          href.includes('/posts/') ||
+          href.includes('/story.php') ||
+          href.includes('/permalink.php') ||
+          href.includes('/photo/?fbid=') ||
+          href.includes('/videos/');
 
-        let text = '';
-        let container = a.closest('[role="article"], div[data-ad-preview="message"], div[aria-posinset]');
-        if (container) text = (container.innerText || '').trim();
-        if (!text) text = (a.innerText || '').trim();
-        text = text.replace(/\s+/g, ' ');
+        if (!articleLike) continue;
+
+        const container =
+          a.closest('[role="article"]') ||
+          a.closest('div[data-pagelet]') ||
+          a.parentElement;
+
+        if (!container) continue;
+
+        const text = clean(container.innerText || '');
         if (!text) continue;
+        if (text.length < 40) continue;
 
-        out.push({ text, url: href });
-        if (out.length >= maxItems) break;
+        const key = text.slice(0, 180);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        out.push({
+          text,
+          url: href
+        });
+
+        if (out.length >= 10) break;
       }
-      return out;
-    }, limit);
 
-    return { ok: true, blocked: false, posts: result, raw_count: result.length, fetched_url: url };
+      if (!out.length) {
+        const articles = Array.from(document.querySelectorAll('[role="article"]'));
+        for (const el of articles) {
+          const text = clean(el.innerText || '');
+          if (!text) continue;
+          if (text.length < 40) continue;
+
+          const a = el.querySelector('a[href*="/posts/"], a[href*="/story.php"], a[href*="/permalink.php"], a[href*="/videos/"], a[href*="/photo/?fbid="]');
+          const href = a ? a.href : '';
+
+          const key = text.slice(0, 180);
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          out.push({
+            text,
+            url: href
+          });
+
+          if (out.length >= 10) break;
+        }
+      }
+
+      return out;
+    });
+
+    const normalized = posts.map((p) => ({
+      text: String(p.text || '').trim(),
+      url: String(p.url || '').trim() || pageUrl
+    }));
+
+    return {
+      ok: true,
+      data: {
+        posts: normalized
+      }
+    };
   } finally {
-    if (browser) await browser.close();
+    await context.close();
+    await browser.close();
   }
 }
 
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'fb-scraper'
+  });
+});
+
 app.get('/scrape', auth, async (req, res) => {
-  const url = String(req.query.url || '').trim();
-  const limit = Math.max(1, Math.min(20, Number(req.query.limit || 10)));
-  if (!url) return res.status(400).json({ ok: false, error: 'Missing url' });
   try {
-    const data = await scrapeFacebook(url, limit);
-    res.json(data);
+    const inputUrl = normalizeFacebookUrl(req.query.url);
+
+    if (!inputUrl) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Missing url parameter'
+      });
+    }
+
+    const result = await scrapeFacebook(inputUrl);
+    return res.json(result);
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message || 'Unknown error', stack: err.stack || '' });
+    return res.status(500).json({
+      ok: false,
+      error: err.message,
+      stack: err.stack
+    });
   }
 });
 
-app.post('/scrape', auth, async (req, res) => {
-  const url = String(req.body?.url || '').trim();
-  const limit = Math.max(1, Math.min(20, Number(req.body?.limit || 10)));
-  if (!url) return res.status(400).json({ ok: false, error: 'Missing url' });
-  try {
-    const data = await scrapeFacebook(url, limit);
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message || 'Unknown error', stack: err.stack || '' });
-  }
+app.listen(PORT, () => {
+  console.log(`fb-scraper listening on ${PORT}`);
 });
-
-app.listen(PORT, () => console.log(`fb-scraper listening on :${PORT}`));
