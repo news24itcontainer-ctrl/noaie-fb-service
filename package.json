@@ -1,12 +1,7 @@
 {
-  "name": "fb-scraper",
-  "version": "1.0.1",
+  "name": "fb-scraper-service",
+  "version": "4.6.2",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "puppeteer": "^22.8.2"
-  }
+  "scripts": {"start": "node server.js"},
+  "dependencies": {"express": "^4.21.2", "playwright": "^1.52.0"}
 }
